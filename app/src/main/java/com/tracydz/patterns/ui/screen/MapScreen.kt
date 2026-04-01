@@ -157,6 +157,46 @@ fun MapScreen() {
             patternResult?.let { result ->
                 PatternOverlay(result)
             }
+
+            // Wind direction arrow on the map
+            if (wind.speedKts > 0 && wind.directionFrom > 0) {
+                val windAnchor = if (hasTarget) targetMarkerState.position
+                    else cameraPositionState.position.target
+                val windTowardRad = Math.toRadians(wind.directionFrom + 180.0)
+                val arrowLen = 300.0 // feet
+                val arrowTip = PatternCalculator.offsetLatLng(
+                    windAnchor,
+                    arrowLen * sin(windTowardRad),
+                    arrowLen * cos(windTowardRad)
+                )
+                // Shaft
+                Polyline(
+                    points = listOf(windAnchor, arrowTip),
+                    color = Color(0xFF4FC3F7),
+                    width = 6f
+                )
+                // Left barb
+                val barbLen = 80.0
+                val barbAngle1 = windTowardRad + Math.toRadians(150.0)
+                val barb1 = PatternCalculator.offsetLatLng(
+                    arrowTip, barbLen * sin(barbAngle1), barbLen * cos(barbAngle1)
+                )
+                Polyline(
+                    points = listOf(arrowTip, barb1),
+                    color = Color(0xFF4FC3F7),
+                    width = 5f
+                )
+                // Right barb
+                val barbAngle2 = windTowardRad - Math.toRadians(150.0)
+                val barb2 = PatternCalculator.offsetLatLng(
+                    arrowTip, barbLen * sin(barbAngle2), barbLen * cos(barbAngle2)
+                )
+                Polyline(
+                    points = listOf(arrowTip, barb2),
+                    color = Color(0xFF4FC3F7),
+                    width = 5f
+                )
+            }
         }
 
         // -- Swipe overlay for target placement --
