@@ -11,6 +11,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Air
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -20,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -58,6 +60,17 @@ fun WindBar(
             Icons.Default.Air, contentDescription = "Wind",
             tint = Color.White, modifier = Modifier.size(20.dp)
         )
+
+        if (wind.speedKts > 0 && wind.directionFrom > 0) {
+            Icon(
+                Icons.Default.Navigation,
+                contentDescription = "Wind direction",
+                tint = Color(0xFF4FC3F7),
+                modifier = Modifier
+                    .size(22.dp)
+                    .rotate(wind.directionFrom.toFloat() + 180f)
+            )
+        }
 
         BasicTextField(
             value = if (wind.speedKts > 0) wind.speedKts.toInt().toString() else "",

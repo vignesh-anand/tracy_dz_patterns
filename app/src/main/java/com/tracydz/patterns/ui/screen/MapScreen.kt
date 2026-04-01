@@ -1,12 +1,9 @@
 package com.tracydz.patterns.ui.screen
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.content.pm.PackageManager
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,13 +30,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -63,6 +59,9 @@ import com.tracydz.patterns.ui.components.PatternOverlay
 import com.tracydz.patterns.ui.components.WindBar
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 private val DEFAULT_CENTER = LatLng(37.731464, -121.334519)
 
@@ -88,6 +87,10 @@ fun MapScreen() {
     val targetMarkerState = rememberMarkerState(position = DEFAULT_CENTER)
     val headingMarkerState = rememberMarkerState(position = DEFAULT_CENTER)
 
+    // -- Swipe gesture state --
+    var dragStart by remember { mutableStateOf<Offset?>(null) }
+    var dragEnd by remember { mutableStateOf<Offset?>(null) }
+
     // -- Camera --
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(DEFAULT_CENTER, 16f)
@@ -97,24 +100,8 @@ fun MapScreen() {
     var showCanopySheet by remember { mutableStateOf(false) }
     var editingCanopy by remember { mutableStateOf<Canopy?>(null) }
 
-    // -- Location --
-    val fusedClient = remember { LocationServices.getFusedLocationProviderClient(context) }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions.values.any { it }) {
-            doAutoFetchWind(fusedClient, scope, cameraPositionState,
-                onResult = { w -> wind = w; isWindLoading = false },
-                onError = {
-                    isWindLoading = false
-                    Toast.makeText(context, "Could not fetch wind", Toast.LENGTH_SHORT).show()
-                }
-            )
-        } else {
-            isWindLoading = false
-            Toast.makeText(context, "Location permission required", Toast.LENGTH_SHORT).show()
-        }
-    }
+    // -- DZ coordinates for wind fetch (map center) --
+    val dzCoords = cameraPositionState.position.target
 
     // -- Pattern calculation --
     val patternResult = if (hasTarget && activeCanopy != null) {
@@ -141,16 +128,7 @@ fun MapScreen() {
                 tiltGesturesEnabled = true,
                 mapToolbarEnabled = false
             ),
-            onMapClick = { latLng ->
-                if (isTargetMode) {
-                    hasTarget = true
-                    targetMarkerState.position = latLng
-                    // Place heading marker 500ft south (default northerly heading)
-                    headingMarkerState.position =
-                        PatternCalculator.offsetLatLng(latLng, 0.0, -500.0)
-                    isTargetMode = false
-                }
-            }
+            onMapClick = { }
         ) {
             if (hasTarget) {
                 // Approach direction line (thin white line from heading marker → target)
@@ -181,6 +159,75 @@ fun MapScreen() {
             }
         }
 
+        // -- Swipe overlay for target placement --
+        if (isTargetMode) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                dragStart = offset
+                                dragEnd = offset
+                            },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                dragEnd = change.position
+                            },
+                            onDragEnd = {
+                                val start = dragStart
+                                val end = dragEnd
+                                val projection = cameraPositionState.projection
+                                if (start != null && end != null && projection != null) {
+                                    val startPt = android.graphics.Point(start.x.toInt(), start.y.toInt())
+                                    val endPt = android.graphics.Point(end.x.toInt(), end.y.toInt())
+                                    val startLatLng = projection.fromScreenLocation(startPt)
+                                    val endLatLng = projection.fromScreenLocation(endPt)
+
+                                    val dx = end.x - start.x
+                                    val dy = end.y - start.y
+                                    val swipeLen = sqrt(dx * dx + dy * dy)
+
+                                    hasTarget = true
+                                    targetMarkerState.position = startLatLng
+
+                                    if (swipeLen > 50f) {
+                                        val heading = PatternCalculator.bearingBetween(startLatLng, endLatLng)
+                                        val behindRad = Math.toRadians(heading + 180.0)
+                                        headingMarkerState.position = PatternCalculator.offsetLatLng(
+                                            startLatLng,
+                                            500.0 * sin(behindRad),
+                                            500.0 * cos(behindRad)
+                                        )
+                                    } else {
+                                        headingMarkerState.position =
+                                            PatternCalculator.offsetLatLng(startLatLng, 0.0, -500.0)
+                                    }
+                                    isTargetMode = false
+                                }
+                                dragStart = null
+                                dragEnd = null
+                            },
+                            onDragCancel = {
+                                dragStart = null
+                                dragEnd = null
+                            }
+                        )
+                    }
+            ) {
+                val s = dragStart
+                val e = dragEnd
+                if (s != null && e != null) {
+                    drawCircle(color = Color.Red, radius = 10f, center = s)
+                    drawLine(
+                        color = Color.White, start = s, end = e,
+                        strokeWidth = 5f, cap = StrokeCap.Round
+                    )
+                    drawCircle(color = Color.White, radius = 8f, center = e)
+                }
+            }
+        }
+
         // -- Wind bar (top center) --
         WindBar(
             wind = wind,
@@ -188,25 +235,13 @@ fun MapScreen() {
             isLoading = isWindLoading,
             onAutoFetch = {
                 isWindLoading = true
-                val hasPerm = ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.ACCESS_FINE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED
-                if (hasPerm) {
-                    doAutoFetchWind(fusedClient, scope, cameraPositionState,
-                        onResult = { w -> wind = w; isWindLoading = false },
-                        onError = {
-                            isWindLoading = false
-                            Toast.makeText(context, "Could not fetch wind", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                } else {
-                    permissionLauncher.launch(
-                        arrayOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION
-                        )
-                    )
-                }
+                doAutoFetchWind(scope, dzCoords,
+                    onResult = { w -> wind = w; isWindLoading = false },
+                    onError = {
+                        isWindLoading = false
+                        Toast.makeText(context, "Could not fetch wind", Toast.LENGTH_SHORT).show()
+                    }
+                )
             },
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -253,7 +288,7 @@ fun MapScreen() {
         // -- Target mode hint --
         if (isTargetMode) {
             Text(
-                text = "Tap map to set landing target",
+                text = "Swipe: start = target, direction = heading",
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 88.dp)
@@ -322,37 +357,22 @@ private fun LegendItem(color: Color, label: String) {
     }
 }
 
-@SuppressLint("MissingPermission")
 private fun doAutoFetchWind(
-    fusedClient: FusedLocationProviderClient,
     scope: CoroutineScope,
-    cameraPositionState: CameraPositionState,
+    dzCoords: LatLng,
     onResult: (WindData) -> Unit,
     onError: () -> Unit
 ) {
-    fusedClient.lastLocation
-        .addOnSuccessListener { location ->
-            if (location != null) {
-                cameraPositionState.move(
-                    CameraUpdateFactory.newLatLng(
-                        LatLng(location.latitude, location.longitude)
-                    )
-                )
-                scope.launch {
-                    try {
-                        val response = RetrofitClient.openMeteoService.getCurrentWind(
-                            location.latitude, location.longitude
-                        )
-                        val speed = response.current?.wind_speed_10m ?: 0.0
-                        val dir = response.current?.wind_direction_10m ?: 0.0
-                        onResult(WindData(speed, dir))
-                    } catch (e: Exception) {
-                        onError()
-                    }
-                }
-            } else {
-                onError()
-            }
+    scope.launch {
+        try {
+            val response = RetrofitClient.openMeteoService.getCurrentWind(
+                dzCoords.latitude, dzCoords.longitude
+            )
+            val speed = response.current?.wind_speed_10m ?: 0.0
+            val dir = response.current?.wind_direction_10m ?: 0.0
+            onResult(WindData(speed, dir))
+        } catch (e: Exception) {
+            onError()
         }
-        .addOnFailureListener { onError() }
+    }
 }

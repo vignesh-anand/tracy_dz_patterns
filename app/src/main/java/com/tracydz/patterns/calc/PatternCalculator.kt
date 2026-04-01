@@ -6,9 +6,11 @@ import com.tracydz.patterns.model.PatternLeg
 import com.tracydz.patterns.model.PatternResult
 import com.tracydz.patterns.model.PatternWaypoint
 import com.tracydz.patterns.model.WindData
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 object PatternCalculator {
 
@@ -38,27 +40,24 @@ object PatternCalculator {
         val descentRateFtS = if (canopy.glideRatio > 0) airspeedFtS / canopy.glideRatio else airspeedFtS
 
         val windSpeedFtS = wind.speedKts * KTS_TO_FT_PER_SEC
-        // Wind FROM direction d blows TOWARD (d + 180)
-        val windAngleRad = Math.toRadians(wind.directionFrom + 180.0)
-        val windEast = windSpeedFtS * sin(windAngleRad)
-        val windNorth = windSpeedFtS * cos(windAngleRad)
+        val windTowardDeg = wind.directionFrom + 180.0
 
-        // Right-hand pattern leg headings
+        // Right-hand pattern ground track headings (always 90° turns)
         val finalHeading = landingHeadingDeg
         val baseHeading = landingHeadingDeg - 90.0
         val downwindHeading = landingHeadingDeg + 180.0
 
         // Final: 300ft -> 0ft
         val finalDisp = legDisplacement(finalHeading, airspeedFtS, descentRateFtS,
-            (FINAL_ALT - TARGET_ALT).toDouble(), windEast, windNorth)
+            (FINAL_ALT - TARGET_ALT).toDouble(), windSpeedFtS, windTowardDeg)
 
         // Base: 600ft -> 300ft
         val baseDisp = legDisplacement(baseHeading, airspeedFtS, descentRateFtS,
-            (BASE_ALT - FINAL_ALT).toDouble(), windEast, windNorth)
+            (BASE_ALT - FINAL_ALT).toDouble(), windSpeedFtS, windTowardDeg)
 
         // Downwind: 1000ft -> 600ft
         val downwindDisp = legDisplacement(downwindHeading, airspeedFtS, descentRateFtS,
-            (ENTRY_ALT - BASE_ALT).toDouble(), windEast, windNorth)
+            (ENTRY_ALT - BASE_ALT).toDouble(), windSpeedFtS, windTowardDeg)
 
         // Build points backwards from target
         val targetPos = target
@@ -106,19 +105,34 @@ object PatternCalculator {
 
     /**
      * Returns (eastFt, northFt) ground displacement for one pattern leg.
+     * Ground track heading is fixed (90° turns preserved). Wind only affects
+     * the distance covered along that heading via groundspeed changes.
+     * Pilot crabs to maintain ground track; crosswind reduces forward component.
      */
     private fun legDisplacement(
-        headingDeg: Double,
+        groundTrackHeadingDeg: Double,
         airspeedFtS: Double,
         descentRateFtS: Double,
         altLossFt: Double,
-        windEastFtS: Double,
-        windNorthFtS: Double
+        windSpeedFtS: Double,
+        windTowardDeg: Double
     ): Pair<Double, Double> {
         val timeSec = if (descentRateFtS > 0) altLossFt / descentRateFtS else 0.0
-        val headingRad = Math.toRadians(headingDeg)
-        val groundEast = airspeedFtS * sin(headingRad) + windEastFtS
-        val groundNorth = airspeedFtS * cos(headingRad) + windNorthFtS
-        return Pair(groundEast * timeSec, groundNorth * timeSec)
+        val headingRad = Math.toRadians(groundTrackHeadingDeg)
+
+        val angleDiffRad = Math.toRadians(windTowardDeg - groundTrackHeadingDeg)
+        val wAlong = windSpeedFtS * cos(angleDiffRad)
+        val wAcross = windSpeedFtS * sin(angleDiffRad)
+
+        val vForward = if (abs(wAcross) < airspeedFtS) {
+            sqrt(airspeedFtS * airspeedFtS - wAcross * wAcross)
+        } else {
+            0.0
+        }
+
+        val groundSpeed = maxOf(vForward + wAlong, 0.0)
+        val distance = groundSpeed * timeSec
+
+        return Pair(distance * sin(headingRad), distance * cos(headingRad))
     }
 }
